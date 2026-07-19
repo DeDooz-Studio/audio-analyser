@@ -3,6 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#dc2626">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Analyzer">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <script>
+        if('serviceWorker' in navigator) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+        }
+    </script>
     <title>Audio Analysis</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Cinzel:wght@600;800&display=swap');
@@ -57,6 +68,10 @@
         .btn:hover { border-color: #dc2626; }
         .note { font-size: 10px; color: #525252; margin-bottom: 12px; }
         @media (max-width: 768px) { .upload-section { grid-template-columns: 1fr; } }
+    
+        #splash { position: fixed; inset: 0; background: #000; z-index: 9999; display: flex; align-items: center; justify-content: center; transition: background 0.9s ease; }
+        #splash-logo { width: min(70vw, 420px); filter: drop-shadow(0 0 30px rgba(220,38,38,0.6)); transition: transform 0.9s cubic-bezier(.7,0,.3,1), filter 0.9s ease; animation: splashPulse 2s ease-in-out; }
+        @keyframes splashPulse { 0% { opacity: 0; transform: scale(0.85); } 25% { opacity: 1; transform: scale(1); } 100% { transform: scale(1); } }
     </style>
 </head>
 <body>
@@ -130,6 +145,7 @@
                 <button onclick="showTab('sons', event)">SONS</button>
                 <button onclick="showTab('live', event)">LIVE</button>
                 <button onclick="showTab('histo', event)">HISTO</button>
+                <button onclick="showTab('kit', event)">🔌 KIT</button>
             </div>
 
             <div class="tab-pane active" id="tab-spectre">
@@ -199,6 +215,7 @@
                 <div id="live-content"></div>
             </div>
 
+            <div class="tab-pane" id="tab-kit"><div id="kit-content"></div></div>
             <div class="tab-pane" id="tab-histo">
                 <div style="margin-bottom:12px;">
                     <button class="btn" onclick="exportHistory()">Exporter JSON</button>
@@ -256,6 +273,258 @@
 
         let dataA = null, dataB = null, dataV = null, genre = 'metalcore', mixType = 'master';
         let analysisA = null;
+        // ============ PLUGIN DATABASE & MY KIT ============
+        // caps: eqs=EQ statique, eqd=EQ dynamique, ms=Mid/Side, comp, lim=limiteur, mono=utility mono, width, sat=saturation, ds=de-esser
+        const PLUGIN_DB = [
+            // --- STOCK CUBASE ---
+            {id:'cb_freq2',pri:5,n:'Frequency 2',v:'Cubase',daw:'cubase',cat:'eq',caps:['eqs','eqd','ms'],ctl:'active "Dynamic" par bande; sélecteur L/R–M/S par bande en haut du module'},
+            {id:'cb_studioeq',n:'Studio EQ',v:'Cubase',daw:'cubase',cat:'eq',caps:['eqs']},
+            {id:'cb_comp',n:'Compressor',v:'Cubase',daw:'cubase',cat:'comp',caps:['comp']},
+            {id:'cb_mbcomp',n:'Multiband Compressor',v:'Cubase',daw:'cubase',cat:'comp',caps:['comp','eqd']},
+            {id:'cb_max',pri:4,n:'Maximizer',v:'Cubase',daw:'cubase',cat:'lim',caps:['lim']},
+            {id:'cb_lim',n:'Limiter',v:'Cubase',daw:'cubase',cat:'lim',caps:['lim']},
+            {id:'cb_magneto',n:'Magneto II',v:'Cubase',daw:'cubase',cat:'sat',caps:['sat']},
+            {id:'cb_deesser',n:'DeEsser',v:'Cubase',daw:'cubase',cat:'ds',caps:['ds']},
+            {id:'cb_imager',pri:4,n:'Imager',v:'Cubase',daw:'cubase',cat:'util',caps:['width','mono'],ctl:'Width par bande — mets la bande basse à 0% pour un bas mono'},
+            // --- STOCK LOGIC ---
+            {id:'lg_cheq',n:'Channel EQ',v:'Logic',daw:'logic',cat:'eq',caps:['eqs']},
+            {id:'lg_comp',n:'Compressor',v:'Logic',daw:'logic',cat:'comp',caps:['comp']},
+            {id:'lg_lim',pri:4,n:'Adaptive Limiter',v:'Logic',daw:'logic',cat:'lim',caps:['lim']},
+            {id:'lg_deesser',n:'DeEsser 2',v:'Logic',daw:'logic',cat:'ds',caps:['ds']},
+            {id:'lg_dirmix',n:'Direction Mixer',v:'Logic',daw:'logic',cat:'util',caps:['width','mono']},
+            {id:'lg_phatfx',n:'Phat FX',v:'Logic',daw:'logic',cat:'sat',caps:['sat']},
+            // --- STOCK ABLETON ---
+            {id:'ab_eq8',pri:4,n:'EQ Eight',v:'Ableton',daw:'ableton',cat:'eq',caps:['eqs','ms'],ctl:'mode M/S dans le menu du haut; pas de dynamique — combine avec Multiband Dynamics'},
+            {id:'ab_glue',n:'Glue Compressor',v:'Ableton',daw:'ableton',cat:'comp',caps:['comp']},
+            {id:'ab_mbdyn',n:'Multiband Dynamics',v:'Ableton',daw:'ableton',cat:'comp',caps:['comp','eqd']},
+            {id:'ab_lim',pri:3,n:'Limiter',v:'Ableton',daw:'ableton',cat:'lim',caps:['lim']},
+            {id:'ab_sat',n:'Saturator',v:'Ableton',daw:'ableton',cat:'sat',caps:['sat']},
+            {id:'ab_util',pri:4,n:'Utility',v:'Ableton',daw:'ableton',cat:'util',caps:['mono','width'],ctl:'Width à 0% = mono; Bass Mono avec fréquence de coupure intégrée'},
+            // --- STOCK FL ---
+            {id:'fl_peq2',n:'Parametric EQ 2',v:'FL Studio',daw:'flstudio',cat:'eq',caps:['eqs']},
+            {id:'fl_maximus',n:'Maximus',v:'FL Studio',daw:'flstudio',cat:'comp',caps:['comp','eqd','lim']},
+            {id:'fl_lim',n:'Fruity Limiter',v:'FL Studio',daw:'flstudio',cat:'lim',caps:['lim','comp']},
+            {id:'fl_stereo',n:'Fruity Stereo Enhancer',v:'FL Studio',daw:'flstudio',cat:'util',caps:['width','mono']},
+            // --- STOCK REAPER ---
+            {id:'rp_reaeq',n:'ReaEQ',v:'Reaper',daw:'reaper',cat:'eq',caps:['eqs']},
+            {id:'rp_reacomp',n:'ReaComp',v:'Reaper',daw:'reaper',cat:'comp',caps:['comp']},
+            {id:'rp_reaxcomp',n:'ReaXcomp',v:'Reaper',daw:'reaper',cat:'comp',caps:['comp','eqd']},
+            {id:'rp_realimit',n:'ReaLimit',v:'Reaper',daw:'reaper',cat:'lim',caps:['lim']},
+            // --- STOCK STUDIO ONE ---
+            {id:'s1_proeq',n:'Pro EQ3',v:'Studio One',daw:'studioone',cat:'eq',caps:['eqs']},
+            {id:'s1_comp',n:'Compressor',v:'Studio One',daw:'studioone',cat:'comp',caps:['comp']},
+            {id:'s1_lim',n:'Limiter2',v:'Studio One',daw:'studioone',cat:'lim',caps:['lim']},
+            // --- STOCK PRO TOOLS ---
+            {id:'pt_eq3',n:'EQ3 7-Band',v:'Pro Tools',daw:'protools',cat:'eq',caps:['eqs']},
+            {id:'pt_dyn3',n:'Dyn3 Compressor/Limiter',v:'Pro Tools',daw:'protools',cat:'comp',caps:['comp','lim']},
+            {id:'pt_bf76',n:'BF-76',v:'Pro Tools',daw:'protools',cat:'comp',caps:['comp']},
+            // --- FABFILTER ---
+            {id:'ff_proq3',pri:10,n:'Pro-Q 3/4',v:'FabFilter',cat:'eq',caps:['eqs','eqd','ms'],ctl:'clic-droit sur la bande → Make Dynamic (le gain devient le range); sélecteur Stereo/Mid/Side sous chaque bande'},
+            {id:'ff_proc2',pri:7,n:'Pro-C 2',v:'FabFilter',cat:'comp',caps:['comp']},
+            {id:'ff_prol2',pri:8,n:'Pro-L 2',v:'FabFilter',cat:'lim',caps:['lim']},
+            {id:'ff_promb',pri:8,n:'Pro-MB',v:'FabFilter',cat:'comp',caps:['comp','eqd','ms']},
+            {id:'ff_prods',pri:7,n:'Pro-DS',v:'FabFilter',cat:'ds',caps:['ds']},
+            {id:'ff_saturn',pri:7,n:'Saturn 2',v:'FabFilter',cat:'sat',caps:['sat']},
+            // --- IZOTOPE ---
+            {id:'iz_ozone',pri:9,n:'Ozone 12 (EQ/Max/Imager)',v:'iZotope',cat:'suite',caps:['eqs','eqd','ms','lim','width','mono'],ctl:'module Equalizer: onglet Mid/Side + mode Dynamic par bande; Imager: bande basse à -100 = mono; Maximizer pour le loudness'},
+            {id:'iz_neutron',pri:8,n:'Neutron 5',v:'iZotope',cat:'suite',caps:['eqs','eqd','comp','width','ms'],ctl:'module EQ: bandes dynamiques; module Sculptor/Width pour la largeur par zone'},
+            {id:'iz_nectar',pri:7,n:'Nectar 4',v:'iZotope',cat:'suite',caps:['eqs','eqd','comp','ds'],ctl:'De-esser intégré; EQ dynamique dans le module EQ'},
+            // --- WAVES ---
+            {id:'wv_f6',pri:8,n:'F6 Dynamic EQ',v:'Waves',cat:'eq',caps:['eqs','eqd','ms'],ctl:'boutons M/S par bande; Threshold + Range par bande'},
+            {id:'wv_c6',pri:6,n:'C6 Multiband',v:'Waves',cat:'comp',caps:['comp','eqd']},
+            {id:'wv_l2',pri:6,n:'L2 Ultramaximizer',v:'Waves',cat:'lim',caps:['lim']},
+            {id:'wv_rvox',n:'RVox',v:'Waves',cat:'comp',caps:['comp']},
+            {id:'wv_s1',n:'S1 Imager',v:'Waves',cat:'util',caps:['width','mono']},
+            {id:'wv_deesser',n:'DeEsser',v:'Waves',cat:'ds',caps:['ds']},
+            // --- AUTRES PAYANTS ---
+            {id:'ke_kirchhoff',pri:9,n:'Kirchhoff-EQ',v:'Three-Body',cat:'eq',caps:['eqs','eqd','ms']},
+            {id:'pa_bxdigital',pri:7,n:'bx_digital V3',v:'Plugin Alliance',cat:'eq',caps:['eqs','ms'],ctl:'EQ M/S natif — sections Mid et Side séparées; Mono-Maker pour le bas'},
+            {id:'st_decap',n:'Decapitator',v:'Soundtoys',cat:'sat',caps:['sat']},
+            {id:'sl_fgx',pri:7,n:'FG-X 2',v:'Slate',cat:'lim',caps:['lim']},
+            {id:'ua_1176',n:'1176 (UAD/émul.)',v:'UAD',cat:'comp',caps:['comp']},
+            {id:'ua_la2a',n:'LA-2A (UAD/émul.)',v:'UAD',cat:'comp',caps:['comp']},
+            {id:'ua_pultec',n:'Pultec EQP-1A (émul.)',v:'UAD',cat:'eq',caps:['eqs']},
+            // --- GRATUITS ---
+            {id:'tdr_nova',pri:7,n:'TDR Nova',v:'Tokyo Dawn (gratuit)',cat:'eq',caps:['eqs','eqd'],ctl:'active le bouton ⚡ de la bande = mode dynamique; Threshold + Ratio par bande'},
+            {id:'tdr_kotel',pri:6,n:'TDR Kotelnikov',v:'Tokyo Dawn (gratuit)',cat:'comp',caps:['comp']},
+            {id:'kh_mjuc',pri:5,n:'MJUC jr.',v:'Klanghelm (gratuit)',cat:'comp',caps:['comp']},
+            {id:'kh_dc1a',n:'DC1A',v:'Klanghelm (gratuit)',cat:'comp',caps:['comp']},
+            {id:'kh_ivgi',n:'IVGI',v:'Klanghelm (gratuit)',cat:'sat',caps:['sat']},
+            {id:'sf_satknob',n:'Saturation Knob',v:'Softube (gratuit)',cat:'sat',caps:['sat']},
+            {id:'vx_span',n:'SPAN',v:'Voxengo (gratuit)',cat:'meter',caps:[]},
+            {id:'vx_msed',pri:5,n:'MSED',v:'Voxengo (gratuit)',cat:'util',caps:['ms','mono','width'],ctl:'encode/décode M/S — baisse le Side pour resserrer une zone (combine avec un EQ avant/après)'},
+            {id:'yl_loud',n:'Youlean Loudness Meter',v:'Youlean (gratuit)',cat:'meter',caps:[]},
+            {id:'boz_bod',n:'Bark of Dog 3',v:'Boz (gratuit)',cat:'eq',caps:['eqs'],ctl:'résonance/boost du bas — utile pour renforcer 60-120 Hz proprement'},
+            {id:'boz_pani',n:'Panipulator',v:'Boz (gratuit)',cat:'util',caps:['mono'],ctl:'bouton Mono pour vérifier la compatibilité — c\'est un outil de CHECK, pas de correction'},
+            {id:'ao_lala',n:'LALA',v:'Analog Obsession (gratuit)',cat:'comp',caps:['comp']},
+            {id:'md_meq',n:'MEqualizer',v:'Melda (gratuit)',cat:'eq',caps:['eqs']},
+            {id:'md_mcomp',n:'MCompressor',v:'Melda (gratuit)',cat:'comp',caps:['comp']},
+            {id:'md_mutil',n:'MUtility',v:'Melda (gratuit)',cat:'util',caps:['mono','width','ms']},
+            {id:'xf_ott',pri:4,n:'OTT',v:'Xfer (gratuit)',cat:'comp',caps:['comp','eqd']},
+            {id:'lm_loudmax',pri:3,n:'LoudMax',v:'Thomas Mundt (gratuit)',cat:'lim',caps:['lim']},
+            {id:'vl_lim6',pri:4,n:'Limiter No6',v:'Vladg (gratuit)',cat:'lim',caps:['lim']},
+            {id:'iz_imgfree',pri:4,n:'Ozone Imager (gratuit)',v:'iZotope',cat:'util',caps:['width','mono']},
+            {id:'sl_fresh',n:'Fresh Air',v:'Slate (gratuit)',cat:'eq',caps:['eqs'],ctl:'shelf air 6k+/12k+ à deux boutons — pour le manque de brillance seulement'},
+            {id:'nam_amp',n:'Neural Amp Modeler',v:'NAM (gratuit)',cat:'sat',caps:['sat']}
+        ];
+        const KIT_CATS = [['eq','EQ'],['comp','Compression'],['lim','Limiteurs'],['sat','Saturation'],['util','Utility / Image stéréo'],['ds','De-essers'],['suite','Suites / Channel strips'],['meter','Metering']];
+        const KIT_BUSES = [['master','MASTER'],['guitar','BUS GUIT'],['bass','BASS'],['drums','DRUMS'],['vocal','VOIX'],['synth','SYNTH'],['keys','CLAVIER']];
+        const KIT_DAWS = [['','— aucun / autre —'],['cubase','Cubase'],['logic','Logic Pro'],['ableton','Ableton Live'],['flstudio','FL Studio'],['reaper','Reaper'],['studioone','Studio One'],['protools','Pro Tools']];
+
+        let KIT = {daw:'', owned:[], chains:{}, custom:[]};
+        try { const k = localStorage.getItem('myKit'); if(k) KIT = Object.assign(KIT, JSON.parse(k)); } catch(e) {}
+        function saveKit() {
+            try { localStorage.setItem('myKit', JSON.stringify(KIT)); } catch(e) {}
+            if(dataA) render();   // régénère les conseils avec le kit à jour
+        }
+        function allPlugins() { return PLUGIN_DB.concat(KIT.custom || []); }
+        function plugById(id) { return allPlugins().find(p => p.id === id); }
+
+        function kitSetDaw(d) {
+            KIT.daw = d;
+            // auto-coche les stock du DAW, décoche ceux des autres DAWs non possédés manuellement
+            PLUGIN_DB.forEach(p => {
+                if(!p.daw) return;
+                const idx = KIT.owned.indexOf(p.id);
+                if(p.daw === d && idx === -1) KIT.owned.push(p.id);
+                if(p.daw !== d && idx !== -1) KIT.owned.splice(idx, 1);
+            });
+            saveKit(); renderKit();
+        }
+        function kitToggle(id) {
+            const i = KIT.owned.indexOf(id);
+            if(i === -1) KIT.owned.push(id); else KIT.owned.splice(i, 1);
+            saveKit(); renderKit();
+        }
+        function kitAddChain(bus) {
+            const sel = document.getElementById('chain-sel-' + bus);
+            if(!sel || !sel.value) return;
+            if(!KIT.chains[bus]) KIT.chains[bus] = [];
+            if(KIT.chains[bus].indexOf(sel.value) === -1) KIT.chains[bus].push(sel.value);
+            saveKit(); renderKit();
+        }
+        function kitRmChain(bus, id) {
+            KIT.chains[bus] = (KIT.chains[bus]||[]).filter(x => x !== id);
+            saveKit(); renderKit();
+        }
+        function kitAddCustom() {
+            const n = document.getElementById('custom-name').value.trim();
+            if(!n) return;
+            const caps = [];
+            ['eqs','eqd','ms','comp','lim','mono','width','sat','ds'].forEach(c => {
+                const cb = document.getElementById('cc-' + c);
+                if(cb && cb.checked) caps.push(c);
+            });
+            KIT.custom.push({id:'custom_' + Date.now(), n:n, v:'Custom', cat: caps.includes('eqs')||caps.includes('eqd') ? 'eq' : (caps.includes('comp') ? 'comp' : (caps.includes('lim') ? 'lim' : (caps.includes('sat') ? 'sat' : 'util'))), caps:caps});
+            KIT.owned.push(KIT.custom[KIT.custom.length-1].id);
+            saveKit(); renderKit();
+        }
+        function kitReset() { if(confirm('Effacer tout ton kit?')) { KIT = {daw:'', owned:[], chains:{}, custom:[]}; saveKit(); renderKit(); } }
+
+        function renderKit() {
+            const el = document.getElementById('kit-content');
+            let h = '<div class="synth-box"><div class="synth-head">🔌 MON KIT</div><div class="synth-line">Configure ton DAW, tes plugins et tes chaînes par bus. Les diagnostics IA utiliseront TES vrais plugins avec leurs vrais contrôles. Sauvegardé automatiquement sur cet appareil.</div></div>';
+            // DAW
+            h += '<div style="margin-bottom:14px;"><label style="font-size:11px;color:#a3a3a3;font-weight:700;">MON DAW </label><select onchange="kitSetDaw(this.value)" style="background:#000;color:#dc2626;border:1px solid #7f1d1d;padding:5px 8px;font-family:Cinzel,serif;">';
+            KIT_DAWS.forEach(d => h += '<option value="' + d[0] + '"' + (KIT.daw===d[0]?' selected':'') + '>' + d[1] + '</option>');
+            h += '</select> <span class="note" style="display:inline;">(coche automatiquement ses plugins stock)</span></div>';
+            // Catégories
+            KIT_CATS.forEach(c => {
+                const plugs = allPlugins().filter(p => p.cat === c[0]);
+                if(plugs.length === 0) return;
+                const nOwned = plugs.filter(p => KIT.owned.includes(p.id)).length;
+                h += '<details style="margin-bottom:8px;border:1px solid #27272a;border-radius:2px;padding:6px 10px;"><summary style="cursor:pointer;font-weight:700;font-size:12px;color:' + (nOwned>0?'#dc2626':'#a3a3a3') + ';">' + c[1] + ' (' + nOwned + '/' + plugs.length + ')</summary><div style="padding:8px 4px;">';
+                plugs.forEach(p => {
+                    h += '<label style="display:block;font-size:11px;margin:3px 0;cursor:pointer;"><input type="checkbox" onchange="kitToggle(\'' + p.id + '\')"' + (KIT.owned.includes(p.id)?' checked':'') + '> ' + p.n + ' <span style="color:#525252">— ' + p.v + '</span></label>';
+                });
+                h += '</div></details>';
+            });
+            // Chaînes par bus
+            h += '<div class="synth-box" style="margin-top:16px;"><div class="synth-head">🎚 MES CHAÎNES (plugins déjà en place par bus)</div>';
+            KIT_BUSES.forEach(b => {
+                const chain = KIT.chains[b[0]] || [];
+                h += '<div style="margin:8px 0;padding:6px;border-left:2px solid #7f1d1d;"><strong style="font-size:11px;color:#dc2626;">' + b[1] + '</strong><br>';
+                chain.forEach((id, i) => {
+                    const p = plugById(id);
+                    if(p) h += '<span style="font-size:10px;background:#18181b;padding:2px 6px;margin:2px;display:inline-block;border-radius:2px;">' + (i+1) + '. ' + p.n + ' <a href="#" onclick="kitRmChain(\'' + b[0] + '\',\'' + id + '\');return false;" style="color:#dc2626;text-decoration:none;">✕</a></span>';
+                });
+                h += '<br><select id="chain-sel-' + b[0] + '" style="background:#000;color:#d4d4d4;border:1px solid #27272a;padding:3px;font-size:10px;max-width:60%;"><option value="">— choisir un plugin possédé —</option>';
+                KIT.owned.forEach(id => { const p = plugById(id); if(p && p.cat !== 'meter') h += '<option value="' + id + '">' + p.n + '</option>'; });
+                h += '</select> <button onclick="kitAddChain(\'' + b[0] + '\')" style="background:#7f1d1d;color:#fff;border:none;padding:3px 10px;font-size:10px;cursor:pointer;">+ Ajouter</button></div>';
+            });
+            h += '</div>';
+            // Custom
+            h += '<details style="margin-top:12px;border:1px solid #27272a;padding:6px 10px;"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:#a3a3a3;">+ Ajouter un plugin pas dans la liste</summary><div style="padding:8px 0;font-size:11px;">';
+            h += '<input id="custom-name" placeholder="Nom du plugin" style="background:#000;color:#d4d4d4;border:1px solid #27272a;padding:4px;width:60%;"><br><div style="margin:6px 0;">Capacités: ';
+            [['eqs','EQ statique'],['eqd','EQ dynamique'],['ms','Mid/Side'],['comp','Comp'],['lim','Limiteur'],['mono','Mono util'],['width','Width'],['sat','Saturation'],['ds','De-esser']].forEach(c => {
+                h += '<label style="margin-right:8px;"><input type="checkbox" id="cc-' + c[0] + '"> ' + c[1] + '</label>';
+            });
+            h += '</div><button onclick="kitAddCustom()" style="background:#7f1d1d;color:#fff;border:none;padding:4px 12px;cursor:pointer;">Ajouter</button></div></details>';
+            h += '<div style="margin-top:12px;"><button onclick="kitReset()" style="background:#000;color:#525252;border:1px solid #27272a;padding:4px 10px;font-size:10px;cursor:pointer;">Réinitialiser le kit</button></div>';
+            el.innerHTML = h;
+        }
+
+        // Choisit le meilleur plugin pour un besoin donné: 1) déjà dans la chaîne du bus, 2) possédé (suggestion), 3) rien
+        function pickPlugin(needCaps, busKey) {
+            const hasAll = p => needCaps.every(c => p.caps.includes(c));
+            const chain = (KIT.chains[busKey] || []).map(plugById).filter(Boolean);
+            const inChain = chain.find(hasAll);
+            if(inChain) return {p:inChain, where:'chain', bus:busKey};
+            // si le bus instrument a rien, regarde la chaîne MASTER (correction possible au mastering)
+            if(busKey !== 'master') {
+                const mchain = (KIT.chains['master'] || []).map(plugById).filter(Boolean);
+                const inM = mchain.find(hasAll);
+                if(inM) return {p:inM, where:'chain', bus:'master'};
+            }
+            const byPri = (a, b) => (b.pri||1) - (a.pri||1);
+            const owned = KIT.owned.map(plugById).filter(Boolean).sort(byPri);
+            const inOwned = owned.find(hasAll);
+            if(inOwned) return {p:inOwned, where:'owned', bus:busKey};
+            const partial = chain.find(pp => pp.caps.includes(needCaps[0])) || owned.find(pp => pp.caps.includes(needCaps[0]));
+            if(partial) return {p:partial, where:'partial', bus:busKey};
+            return null;
+        }
+        const BUS_LABELS = {master:'le MASTER', guitar:'le BUS GUIT', bass:'la BASS', drums:'les DRUMS', vocal:'la VOIX', synth:'le SYNTH', keys:'le CLAVIER'};
+        function kitLine(needCaps, busKey, why) {
+            if(!KIT.owned.length) return null;
+            const pick = pickPlugin(needCaps, busKey);
+            if(!pick) return null;
+            const ctl = pick.p.ctl ? ' — ' + pick.p.ctl : '';
+            if(pick.where === 'chain') return '🔌 Ton <strong>' + pick.p.n + '</strong> déjà sur ' + BUS_LABELS[pick.bus] + ' fait la job' + ctl + '.';
+            if(pick.where === 'owned') return '🔌 Dans ton kit: <strong>' + pick.p.n + '</strong>, mets-le sur ' + BUS_LABELS[busKey] + (why ? ' (' + why + ')' : '') + ctl + '.';
+            return '🔌 À défaut, ton <strong>' + pick.p.n + '</strong> peut approcher le résultat' + ctl + '.';
+        }
+
+        // ===== SPLASH SCREEN =====
+        (function(){
+            const real = document.querySelector('img[alt="Studio DeDooz"]');
+            if(!real) return;
+            real.style.visibility = 'hidden';
+            const ov = document.createElement('div');
+            ov.id = 'splash';
+            const s = document.createElement('img');
+            s.id = 'splash-logo';
+            s.src = real.src;
+            ov.appendChild(s);
+            document.body.appendChild(ov);
+            setTimeout(function(){
+                const r = real.getBoundingClientRect();
+                const sr = s.getBoundingClientRect();
+                const dx = (r.left + r.width/2) - (sr.left + sr.width/2);
+                const dy = (r.top + r.height/2) - (sr.top + sr.height/2);
+                const sc = r.height / sr.height;
+                s.style.transform = 'translate(' + dx + 'px,' + dy + 'px) scale(' + sc + ')';
+                s.style.filter = 'drop-shadow(0 0 12px rgba(220,38,38,0.4))';
+                ov.style.background = 'transparent';
+                ov.style.pointerEvents = 'none';
+                setTimeout(function(){
+                    real.style.visibility = 'visible';
+                    ov.remove();
+                }, 920);
+            }, 2000);
+        })();
+
+
         let rawA = null, rawB = null;
         let computed = {stereo:false, dyn:false, reso:false, sections:false};
 
@@ -282,6 +551,7 @@
             if(name === 'sections' && !computed.sections && rawA) { computeSections(); computed.sections = true; }
             if(name === 'histo') renderHistory();
             if(name === 'sons') renderSons();
+            if(name === 'kit') renderKit();
         }
 
         function fftRadix2(real, imag) {
@@ -711,6 +981,8 @@
                     lines.push('Cette bande a l\'air de manquer (' + dev.toFixed(1) + ' dB) MAIS la corrélation stéréo y est de ' + st.corr.toFixed(2) + '. Tes ' + owner.full + ' doublés s\'annulent partiellement.');
                     lines.push('→ AVANT tout EQ: utility/widener sur ' + target + ', réduis la largeur dans cette zone (ou vérifie la phase entre tes 2 pistes doublées).');
                     lines.push('→ Réanalyse APRÈS. Si la bande remonte toute seule, touche pas à l\'EQ.');
+                    const klA = kitLine(['width'], isStem ? mixType : owner.stem, 'contrôle de largeur ciblé');
+                    if(klA) lines.push(klA);
                     handled = true;
                 }
 
@@ -721,6 +993,8 @@
                     lines.push('Le bas est trop fort (+' + dev.toFixed(1) + ' dB) ET très peu dynamique (' + dy.toFixed(1) + ' dB de mouvement). Signature d\'une source sub soutenue (type LoAir) que le limiteur écrase.');
                     lines.push('→ Baisse le NIVEAU de la source sub sur la bass de ' + amount.toFixed(1) + ' dB au lieu d\'EQer. Un cut EQ ici ferait juste travailler le limiteur plus fort.');
                     lines.push('→ Si tu veux garder le poids: EQ dynamique @ ' + b.f + ' Hz, -' + amount.toFixed(1) + ' dB, Q 1.5, qui agit juste dans les pics.');
+                    const klB = kitLine(['eqd'], 'bass', 'EQ dynamique = il coupe juste quand ça dépasse');
+                    if(klB) lines.push(klB);
                     handled = true;
                 }
 
@@ -736,7 +1010,11 @@
                     const cut = Math.min(6, resoHit.prom * 0.7);
                     title = '🔔 RÉSONANCE — ' + resoHit.f.toFixed(0) + ' Hz (bande ' + b.n + ')';
                     lines.push('L\'excès à ' + b.n + ' vient surtout d\'une résonance étroite à ' + resoHit.f.toFixed(0) + ' Hz (+' + resoHit.prom.toFixed(1) + ' dB au-dessus du contexte), pas d\'un déséquilibre large.');
-                    lines.push('→ EQ statique (bell serré) sur ' + target + ' @ ' + resoHit.f.toFixed(0) + ' Hz, -' + cut.toFixed(1) + ' dB, Q 6. Sweep pour confirmer avant de couper.');
+                    const busC = isStem ? mixType : owner.stem;
+                    const pkC = pickPlugin(['eqs'], busC);
+                    const pnC = pkC ? ' avec <strong>' + pkC.p.n + '</strong>' + (pkC.where === 'chain' ? ' (déjà sur ' + BUS_LABELS[pkC.bus] + ')' : ' (dans ton kit)') : '';
+                    lines.push('→ EQ statique' + pnC + ' (bell serré) sur ' + target + ' @ ' + resoHit.f.toFixed(0) + ' Hz, -' + cut.toFixed(1) + ' dB, Q 6. Sweep pour confirmer avant de couper.');
+                    if(pkC && pkC.p.ctl) lines.push('🔌 ' + pkC.p.n + ': ' + pkC.p.ctl + '.');
                     handled = true;
                 }
 
@@ -745,14 +1023,38 @@
                     const kind = (b.f >= 6000) ? 'shelf' : 'wide';
                     const q = suggestQ(kind);
                     const eqType = (Math.abs(dev) >= 4 && tooLoud) ? 'EQ dynamique' : 'EQ statique';
+                    const stD = an.stereo ? an.stereo.perBand[i] : null;
+                    const needMSd = stD && tooLoud && (stD.width > 50 || (stD.width < 15 && b.f > 200));
+                    const needD0 = [eqType === 'EQ dynamique' ? 'eqd' : 'eqs'];
+                    if(needMSd) needD0.push('ms');
+                    const busD = isStem ? mixType : owner.stem;
+                    const pkD = pickPlugin(needD0, busD);
+                    const pname = pkD ? ' avec <strong>' + pkD.p.n + '</strong>' + (pkD.where === 'chain' ? ' (déjà sur ' + BUS_LABELS[pkD.bus] + ')' : ' (dans ton kit)') : '';
                     if(kind === 'shelf') {
-                        lines.push('→ ' + eqType + ' (shelf) sur ' + target + ' @ ' + b.f + ' Hz, ' + (tooLoud?'-':'+') + amount.toFixed(1) + ' dB.');
+                        lines.push('→ ' + eqType + pname + ' (shelf) sur ' + target + ' @ ' + b.f + ' Hz, ' + (tooLoud?'-':'+') + amount.toFixed(1) + ' dB.');
                     } else {
-                        lines.push('→ ' + eqType + ' (bell) sur ' + target + ' @ ' + b.f + ' Hz, ' + (tooLoud?'-':'+') + amount.toFixed(1) + ' dB, Q ' + q + '.');
+                        lines.push('→ ' + eqType + pname + ' (bell) sur ' + target + ' @ ' + b.f + ' Hz, ' + (tooLoud?'-':'+') + amount.toFixed(1) + ' dB, Q ' + q + '.');
                     }
+                    if(pkD && pkD.p.ctl) lines.push('🔌 ' + pkD.p.n + ': ' + pkD.p.ctl + '.');
                     // conseil bonus selon la zone
                     if(tooLoud && b.f >= 250 && b.f <= 500) lines.push('Zone "mud": si plusieurs instruments s\'empilent ici, coupe un peu sur chacun plutôt que beaucoup sur un seul.');
                     if(tooLoud && b.f >= 2000 && b.f <= 4000) lines.push('Zone "harsh": privilégie un EQ dynamique, ça pique juste dans les passages forts.');
+                }
+
+                // --- PRÉCISION M/S (où dans l'image stéréo) ---
+                if(st) {
+                    if(tooLoud && st.width > 50) lines.push('🎛 M/S: ' + st.width.toFixed(0) + '% de l\'énergie de cette bande est dans les SIDES. Fais la correction en mode Side seulement (EQ M/S) — le centre (voix/snare/bass) reste intact.');
+                    else if(tooLoud && st.width < 15 && b.f > 200) lines.push('🎛 M/S: bande concentrée dans le MID (' + (100-st.width).toFixed(0) + '%). Corrige en mode Mid — tes sides sont corrects.');
+                }
+
+                // --- LOCALISATION TEMPORELLE (quand dans la toune) ---
+                if(an.sections) {
+                    const vals = an.sections.map(r => r.bands[i].db);
+                    const mean = vals.reduce((a,c)=>a+c,0)/4;
+                    const qn = ['le début','le 2e quart','le 3e quart','la fin'];
+                    const devs = vals.map(v=>v-mean);
+                    const qi = tooLoud ? devs.indexOf(Math.max(...devs)) : devs.indexOf(Math.min(...devs));
+                    if(Math.abs(devs[qi]) > 3) lines.push('⏱ Localisation: le problème vient surtout de ' + qn[qi] + ' (' + (devs[qi]>0?'+':'') + devs[qi].toFixed(1) + ' dB vs le reste de la toune). Écoute cette section — une automation ciblée peut être meilleure qu\'un EQ global.');
                 }
 
                 diags.push({prio, sev, title, lines, freq:b.f});
@@ -767,8 +1069,9 @@
                         title:'🔉 BAS PAS ASSEZ MONO — ' + lowBad.map(i=>BANDS[i].f+'Hz').join(', '),
                         lines:[
                             'Le bas doit être quasi mono (corrélation > 0.9). Là il est décorrélé, ce qui le fait disparaître sur les systèmes mono (bars, téléphones).',
-                            '→ Utility en mode MONO sous 120 Hz sur le master OU le bus bass. Aucun widener/reverb stéréo sur le sub.'
-                        ], freq:60});
+                            '→ Utility en mode MONO sous 120 Hz sur le master OU le bus bass. Aucun widener/reverb stéréo sur le sub.',
+                            kitLine(['mono'], 'master', 'passe le bas en mono') || ''
+                        ].filter(Boolean), freq:60});
                 }
             }
             // Crest global écrasé
@@ -777,8 +1080,9 @@
                     title:'🔨 MIX ÉCRASÉ — crest ' + an.dyn.crest.toFixed(1) + ' dB',
                     lines:[
                         'Peak-RMS de ' + an.dyn.crest.toFixed(1) + ' dB: le limiteur/comp de master travaille trop, le mix perd son punch.',
-                        '→ Recule le limiteur (moins de gain d\'entrée) OU le comp de bus master. Vise 8-12 dB de crest pour du metal moderne.'
-                    ], freq:0});
+                        '→ Recule le limiteur (moins de gain d\'entrée) OU le comp de bus master. Vise 8-12 dB de crest pour du metal moderne.',
+                        kitLine(['lim'], 'master') || ''
+                    ].filter(Boolean), freq:0});
             }
             // Instabilité entre sections
             if(an.sections) {
@@ -801,6 +1105,7 @@
             diags.sort((a, b) => b.prio - a.prio);
 
             let sugg = '<div style="font-size:11px;color:#a3a3a3;margin-bottom:4px;font-weight:600">🎯 DIAGNOSTIC (' + (useRef ? 'vs référence' : 'vs targets ' + targetsLabel()) + ')</div>';
+            if(!KIT.owned.length) sugg += '<div class="note">⚙️ Configure l\'onglet 🔌 KIT pour des conseils avec TES vrais plugins et leurs vrais contrôles.</div>';
             sugg += '<div class="note">Fais les corrections DANS L\'ORDRE. Chaque fix change les autres bandes — après #1 et #2, réexporte et réanalyse avant de continuer.</div>';
 
             if(diags.length === 0) {
